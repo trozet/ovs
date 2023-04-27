@@ -1532,7 +1532,8 @@ xlate_lookup_ofproto_(const struct dpif_backer *backer,
         }
 
         ofp_port_t in_port = recirc_id_node->state.metadata.in_port;
-        if (in_port != OFPP_NONE && in_port != OFPP_CONTROLLER) {
+        if (in_port != OFPP_NONE && in_port != OFPP_CONTROLLER &&
+	    !uuid_is_zero(&recirc_id_node->state.xport_uuid)) {
             struct uuid xport_uuid = recirc_id_node->state.xport_uuid;
             xport = xport_lookup_by_uuid(xcfg, &xport_uuid);
             if (xport && xport->xbridge && xport->xbridge->ofproto) {
