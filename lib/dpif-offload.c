@@ -1279,8 +1279,14 @@ dpif_offload_operate(struct dpif *dpif, struct dpif_op **ops, size_t n_ops,
 
                     switch (op->type) {
                     case DPIF_OP_FLOW_PUT:
+                        /* Keep ENOSPC and unresolved sentinel values on the
+                         * existing debug-only path, but include full flow
+                         * details for real offload failures. */
                         log_flow_put_message(dpif, &this_module,
-                                             &op->flow_put, 0);
+                                             &op->flow_put,
+                                             op->error > 0
+                                             && op->error != ENOSPC
+                                             ? op->error : 0);
                         break;
                     case DPIF_OP_FLOW_DEL:
                         log_flow_del_message(dpif, &this_module,
