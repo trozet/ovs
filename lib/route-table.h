@@ -145,6 +145,7 @@ struct route_data {
     uint32_t rta_mark;           /* 0 if missing. */
     uint32_t rta_table_id;       /* 0 if missing. */
     uint32_t rta_priority;       /* 0 if missing. */
+    uint32_t rta_nh_id;          /* 0 if missing. */
     uint16_t *nh_hash_map;       /* Optional nexthop selection table. */
     size_t n_nh_hash;
 };

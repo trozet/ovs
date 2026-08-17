@@ -163,24 +163,31 @@ AT_SETUP([ovs-route - add system route with multiple nexthop - ipv4])
 AT_KEYWORDS([route])
 OVS_TRAFFIC_VSWITCHD_START()
 
-dnl Create tap ports.
-AT_CHECK([ip tuntap add name p1-route mode tap])
+dnl Create carrier-up ports so link-down nexthops are not selected.
+AT_CHECK([ip link add p1-route type veth peer name p1-peer])
 AT_CHECK([ip link set p1-route up])
+AT_CHECK([ip link set p1-peer up])
 on_exit 'ip link del p1-route'
-AT_CHECK([ip tuntap add name p2-route mode tap])
+AT_CHECK([ip link add p2-route type veth peer name p2-peer])
 AT_CHECK([ip link set p2-route up])
+AT_CHECK([ip link set p2-peer up])
 on_exit 'ip link del p2-route'
 
 AT_CHECK([ip addr add 192.168.42.10/24 dev p1-route], [0], [stdout])
 AT_CHECK([ip addr add 192.168.51.10/24 dev p2-route], [0], [stdout])
 AT_CHECK([ip route add 172.16.42.0/24 nexthop via 192.168.42.1 \
-          dev p1-route nexthop via 192.168.51.1 dev p2-route], [0], [stdout])
+          dev p1-route weight 1 nexthop via 192.168.51.1 \
+          dev p2-route weight 3], [0], [stdout])
 
-dnl NOTE: At the time of this writing, it is expected that only the first route
-dnl       will be stored in ovs-router.
 OVS_WAIT_UNTIL_EQUAL([ovs-appctl ovs/route/show | grep -E '172.16.42.0/24' | \
                       sort], [dnl
-Cached: 172.16.42.0/24 dev p1-route GW 192.168.42.1 SRC 192.168.42.10])
+Cached: 172.16.42.0/24 nexthop dev p1-route GW 192.168.42.1 SRC 192.168.42.10 weight 1 nexthop dev p2-route GW 192.168.51.1 SRC 192.168.51.10 weight 3])
+
+dnl Confirm that lookup returns the complete cached nexthop group.
+AT_CHECK([ovs-appctl ovs/route/lookup 172.16.42.1], [0], [dnl
+nexthop dev p1-route gateway 192.168.42.1 src 192.168.42.10 weight 1
+nexthop dev p2-route gateway 192.168.51.1 src 192.168.51.10 weight 3
+])
 
 dnl Confirm that both nexthops are available when using the route-table library
 dnl directly.
@@ -211,11 +218,9 @@ AT_CHECK([ip route add 172.16.42.0/24 nexthop via inet6 fc00:db8:dead::1 \
           dev p1-route nexthop via inet6 fc00:db8:beef::1 dev p2-route],
           [0], [stdout])
 
-dnl NOTE: At the time of this writing, it is expected that only the first route
-dnl       will be stored in ovs-router.
 OVS_WAIT_UNTIL_EQUAL([ovs-appctl ovs/route/show | grep -E '172.16.42.0/24' | \
                       sort], [dnl
-Cached: 172.16.42.0/24 dev p1-route GW fc00:db8:dead::1 SRC fc00:db8:dead::10])
+Cached: 172.16.42.0/24 nexthop dev p1-route GW fc00:db8:dead::1 SRC fc00:db8:dead::10 weight 1 nexthop dev p2-route GW fc00:db8:beef::1 SRC fc00:db8:beef::10 weight 1])
 
 dnl Confirm that both nexthops are available when using the route-table library
 dnl directly.
@@ -232,12 +237,14 @@ AT_SETUP([ovs-route - add system route with multiple nexthop - ipv6])
 AT_KEYWORDS([route])
 OVS_TRAFFIC_VSWITCHD_START()
 
-dnl Create tap ports.
-AT_CHECK([ip tuntap add name p1-route mode tap])
+dnl Create carrier-up ports so link-down nexthops are not selected.
+AT_CHECK([ip link add p1-route type veth peer name p1-peer])
 AT_CHECK([ip link set p1-route up])
+AT_CHECK([ip link set p1-peer up])
 on_exit 'ip link del p1-route'
-AT_CHECK([ip tuntap add name p2-route mode tap])
+AT_CHECK([ip link add p2-route type veth peer name p2-peer])
 AT_CHECK([ip link set p2-route up])
+AT_CHECK([ip link set p2-peer up])
 on_exit 'ip link del p2-route'
 
 AT_CHECK([ip -6 addr add fc00:db8:dead::10/64 dev p1-route], [0], [stdout])
@@ -246,11 +253,9 @@ AT_CHECK([ip -6 route add fc00:db8:cafe::/64 nexthop via fc00:db8:dead::1 \
           dev p1-route nexthop via fc00:db8:beef::1 dev p2-route],
          [0], [stdout])
 
-dnl NOTE: At the time of this writing, it is expected that only the first route
-dnl       will be stored in ovs-router.
 OVS_WAIT_UNTIL_EQUAL([ovs-appctl ovs/route/show | \
                       grep -E 'fc00:db8:cafe::/64' | sort], [dnl
-Cached: fc00:db8:cafe::/64 dev p1-route GW fc00:db8:dead::1 SRC fc00:db8:dead::10])
+Cached: fc00:db8:cafe::/64 nexthop dev p1-route GW fc00:db8:dead::1 SRC fc00:db8:dead::10 weight 1 nexthop dev p2-route GW fc00:db8:beef::1 SRC fc00:db8:beef::10 weight 1])
 
 dnl Confirm that both nexthops are available when using the route-table library
 dnl directly.
@@ -259,6 +264,112 @@ AT_CHECK([ovstest test-lib-route-table-dump | grep fc00:db8:cafe::.*nexthop | \
     fc00:db8:cafe::/64 nexthop family: AF_INET6 addr: fc00:db8:beef::1 ifname: p2-route
     fc00:db8:cafe::/64 nexthop family: AF_INET6 addr: fc00:db8:dead::1 ifname: p1-route
 ])
+
+OVS_TRAFFIC_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ovs-route - nexthop objects and groups])
+AT_KEYWORDS([route nexthop])
+OVS_TRAFFIC_VSWITCHD_START()
+
+AT_CHECK([ip link add p1-route type veth peer name p1-peer])
+AT_CHECK([ip link set p1-route up])
+AT_CHECK([ip link set p1-peer up])
+on_exit 'ip link del p1-route'
+AT_CHECK([ip link add p2-route type veth peer name p2-peer])
+AT_CHECK([ip link set p2-route up])
+AT_CHECK([ip link set p2-peer up])
+on_exit 'ip link del p2-route'
+
+AT_CHECK([ip addr add 192.0.2.10/24 dev p1-route], [0], [stdout])
+AT_CHECK([ip addr add 198.51.100.10/24 dev p2-route], [0], [stdout])
+on_exit 'ip nexthop del id 104201 2>/dev/null || true'
+AT_SKIP_IF([! ip nexthop add id 104201 via 192.0.2.1 \
+            dev p1-route 2>/dev/null])
+on_exit 'ip nexthop del id 104202 2>/dev/null || true'
+AT_CHECK([ip nexthop add id 104202 via 198.51.100.1 dev p2-route])
+on_exit 'ip nexthop del id 104200 2>/dev/null || true'
+AT_SKIP_IF([! ip nexthop add id 104200 \
+            group 104201,1/104202,3 2>/dev/null])
+on_exit 'ip route del 203.0.113.0/24 2>/dev/null || true'
+AT_CHECK([ip route add 203.0.113.0/24 nhid 104200])
+
+OVS_WAIT_UNTIL_EQUAL([ovs-appctl ovs/route/show | grep 203.0.113.0/24], [dnl
+Cached: 203.0.113.0/24 nhid 104200 nexthop dev p1-route GW 192.0.2.1 SRC 192.0.2.10 weight 1 id 104201 nexthop dev p2-route GW 198.51.100.1 SRC 198.51.100.10 weight 3 id 104202])
+AT_CHECK([ovs-appctl ovs/route/lookup 203.0.113.1], [0], [dnl
+nhid 104200
+nexthop dev p1-route gateway 192.0.2.1 src 192.0.2.10 weight 1 id 104201
+nexthop dev p2-route gateway 198.51.100.1 src 198.51.100.10 weight 3 id 104202
+])
+
+dnl Replacing a group must invalidate routes that refer to the group.
+AT_CHECK([ip nexthop replace id 104200 group 104201,3/104202,1])
+OVS_WAIT_UNTIL_EQUAL([ovs-appctl ovs/route/show | grep 203.0.113.0/24], [dnl
+Cached: 203.0.113.0/24 nhid 104200 nexthop dev p1-route GW 192.0.2.1 SRC 192.0.2.10 weight 3 id 104201 nexthop dev p2-route GW 198.51.100.1 SRC 198.51.100.10 weight 1 id 104202])
+
+dnl Replacing a leaf must also update every route that uses it.
+AT_CHECK([ip nexthop replace id 104202 via 198.51.100.2 dev p2-route])
+OVS_WAIT_UNTIL_EQUAL([ovs-appctl ovs/route/show | grep 203.0.113.0/24], [dnl
+Cached: 203.0.113.0/24 nhid 104200 nexthop dev p1-route GW 192.0.2.1 SRC 192.0.2.10 weight 3 id 104201 nexthop dev p2-route GW 198.51.100.2 SRC 198.51.100.10 weight 1 id 104202])
+
+AT_CHECK([ip route del 203.0.113.0/24])
+OVS_WAIT_UNTIL([! ovs-appctl ovs/route/show | grep -q 203.0.113.0/24])
+AT_CHECK([ip nexthop del id 104200])
+AT_CHECK([ip nexthop del id 104201])
+AT_CHECK([ip nexthop del id 104202])
+
+OVS_TRAFFIC_VSWITCHD_STOP
+AT_CLEANUP
+
+AT_SETUP([ovs-route - resilient nexthop group])
+AT_KEYWORDS([route nexthop resilient])
+OVS_TRAFFIC_VSWITCHD_START()
+
+AT_CHECK([ip link add p1-route type veth peer name p1-peer])
+AT_CHECK([ip link set p1-route up])
+AT_CHECK([ip link set p1-peer up])
+on_exit 'ip link del p1-route'
+AT_CHECK([ip link add p2-route type veth peer name p2-peer])
+AT_CHECK([ip link set p2-route up])
+AT_CHECK([ip link set p2-peer up])
+on_exit 'ip link del p2-route'
+
+AT_CHECK([ip addr add 192.0.2.10/24 dev p1-route], [0], [stdout])
+AT_CHECK([ip addr add 198.51.100.10/24 dev p2-route], [0], [stdout])
+on_exit 'ip nexthop del id 104211 2>/dev/null || true'
+AT_SKIP_IF([! ip nexthop add id 104211 via 192.0.2.1 \
+            dev p1-route 2>/dev/null])
+on_exit 'ip nexthop del id 104212 2>/dev/null || true'
+AT_CHECK([ip nexthop add id 104212 via 198.51.100.1 dev p2-route])
+on_exit 'ip nexthop del id 104210 2>/dev/null || true'
+AT_SKIP_IF([! ip nexthop add id 104210 group 104211/104212 \
+            type resilient buckets 16 2>/dev/null])
+on_exit 'ip route del 203.0.113.0/24 2>/dev/null || true'
+AT_CHECK([ip route add 203.0.113.0/24 nhid 104210])
+
+OVS_WAIT_UNTIL_EQUAL([ovs-appctl ovs/route/show | grep 203.0.113.0/24], [dnl
+Cached: 203.0.113.0/24 nhid 104210 nexthop dev p1-route GW 192.0.2.1 SRC 192.0.2.10 weight 1 id 104211 nexthop dev p2-route GW 198.51.100.1 SRC 198.51.100.10 weight 1 id 104212])
+AT_CHECK([ovs-appctl ovs/route/lookup 203.0.113.1 > lookup.out])
+AT_CHECK([sed -n '1,3p' lookup.out], [0], [dnl
+nhid 104210
+nexthop dev p1-route gateway 192.0.2.1 src 192.0.2.10 weight 1 id 104211
+nexthop dev p2-route gateway 198.51.100.1 src 198.51.100.10 weight 1 id 104212
+])
+dnl Verify that the resilient bucket assignment was cached from the kernel.
+AT_CHECK([awk '/^buckets / { \
+              seen = 1; \
+              for (i = 2; i <= NF; i++) { \
+                  if ($i == 104211) { n1++ } \
+                  else if ($i == 104212) { n2++ } \
+              } \
+              valid = (NF == 17 && n1 == 8 && n2 == 8) \
+          } \
+          END { exit !(seen && valid) }' lookup.out])
+
+AT_CHECK([ip route del 203.0.113.0/24])
+AT_CHECK([ip nexthop del id 104210])
+AT_CHECK([ip nexthop del id 104211])
+AT_CHECK([ip nexthop del id 104212])
 
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
