@@ -252,6 +252,13 @@ For a multipath route, lookup displays the complete nexthop group instead of
 selecting a member.  OVS selects a member using the packet hash during normal
 forwarding.
 
+Native tunnel output supports weighted multipath routes and nexthop groups.
+On Linux, OVS caches nexthop objects from netlink in the same generic table
+used by the appctl commands.  OVS uses the datapath hash to select a stable,
+usable nexthop.  If no datapath hash is available, OVS recirculates with a
+packet hash when supported and otherwise selects from the inner flow directly.
+Resilient nexthop groups preserve explicit bucket assignments.
+
 ARP
 ~~~
 

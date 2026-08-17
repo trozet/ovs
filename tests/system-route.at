@@ -200,16 +200,225 @@ AT_CHECK([ovstest test-lib-route-table-dump | grep 172.16.42.0.*nexthop | sort],
 OVS_TRAFFIC_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([native tunnel output uses multipath system route])
+AT_KEYWORDS([route tunnel multipath])
+OVS_TRAFFIC_VSWITCHD_START()
+
+AT_CHECK([ip link add p1-route type veth peer name p1-peer])
+AT_CHECK([ip link set p1-route addrgenmode none])
+AT_CHECK([ip link set p1-peer addrgenmode none])
+AT_CHECK([ip link set p1-route up])
+AT_CHECK([ip link set p1-peer up])
+on_exit 'ip link del p1-route'
+AT_CHECK([ip link add p2-route type veth peer name p2-peer])
+AT_CHECK([ip link set p2-route addrgenmode none])
+AT_CHECK([ip link set p2-peer addrgenmode none])
+AT_CHECK([ip link set p2-route up])
+AT_CHECK([ip link set p2-peer up])
+on_exit 'ip link del p2-route'
+AT_CHECK([ip link add in-route type veth peer name in-peer])
+AT_CHECK([ip link set in-route addrgenmode none])
+AT_CHECK([ip link set in-peer addrgenmode none])
+AT_CHECK([ip link set in-route up])
+AT_CHECK([ip link set in-peer up])
+on_exit 'ip link del in-route'
+
+AT_CHECK([ip addr add 192.0.2.10/24 dev p1-route])
+AT_CHECK([ip addr add 198.51.100.10/24 dev p2-route])
+AT_CHECK([ip route add 203.0.113.0/24 nexthop via 192.0.2.1 \
+          dev p1-route weight 1 nexthop via 198.51.100.1 \
+          dev p2-route weight 3])
+
+AT_CHECK([ovs-vsctl add-br int-br \
+          -- set Bridge int-br datapath_type=netdev \
+             fail-mode=secure])
+AT_CHECK([ovs-vsctl \
+          -- add-port br0 p1-route \
+          -- set Interface p1-route ofport_request=2 \
+          -- add-port br0 p2-route \
+          -- set Interface p2-route ofport_request=3 \
+          -- add-port int-br t1 \
+          -- set Interface t1 type=vxlan ofport_request=4 \
+             options:remote_ip=203.0.113.1 options:key=123 \
+          -- add-port int-br in-route \
+          -- set Interface in-route ofport_request=5])
+AT_CHECK([ovs-ofctl add-flow br0 \
+          "dl_dst=00:00:5e:00:53:01,actions=IN_PORT"])
+AT_CHECK([ovs-ofctl add-flow br0 \
+          "dl_dst=00:00:5e:00:53:02,actions=IN_PORT"])
+AT_CHECK([ovs-ofctl add-flow int-br "in_port=LOCAL,actions=output:4"])
+AT_CHECK([ovs-ofctl add-flow int-br "in_port=5,actions=output:4"])
+AT_CHECK([ovs-appctl tnl/neigh/set br0 192.0.2.1 \
+          00:00:5e:00:53:01], [0], [OK
+])
+AT_CHECK([ovs-appctl tnl/neigh/set br0 198.51.100.1 \
+          00:00:5e:00:53:02], [0], [OK
+])
+
+OVS_WAIT_UNTIL([ovs-appctl ovs/route/show | grep 203.0.113.0/24])
+
+check_tunnel_packet () {
+    peer=$1
+    dst_mac=$2
+    ovs-appctl revalidator/purge
+    before=`ip -s link show "$peer" | \
+            awk '/RX:/{getline; print $2}'`
+
+    $PYTHON3 $srcdir/sendpkt.py in-peer `cat p1-packet` \
+        > /dev/null || return 1
+    after=`ip -s link show "$peer" | \
+           awk '/RX:/{getline; print $2}'`
+
+    test "$after" -gt "$before" && \
+        ovs-appctl dpctl/dump-flows | grep -q "dst=$dst_mac"
+}
+
+dnl Find an inner flow whose cached datapath hash selects p1-route.  Link
+dnl counters can include unrelated address and neighbor traffic, so inspect
+dnl the fixed tunnel action installed for each candidate instead.
+AT_CHECK([for index in `seq 1 64`; do \
+              src_ip=`printf '%02x' $index`; \
+              ip_csum=`printf '%04x' $((0x26d0 - index))`; \
+              udp_src=`printf '%04x' $((1000 + index * 997))`; \
+              packet="00000000000200000000000108004500001c00004000\
+4011${ip_csum}0a0000${src_ip}0a000002${udp_src}07d000080000"; \
+              ovs-appctl revalidator/purge; \
+              for attempt in `seq 1 20`; do \
+                  $PYTHON3 $srcdir/sendpkt.py in-peer "$packet" \
+                      > /dev/null; \
+                  if ovs-appctl dpctl/dump-flows | \
+                         grep -q 'dst=00:00:5e:00:53:01'; then \
+                      echo "$packet" > p1-packet; \
+                      break 2; \
+                  fi; \
+                  if ovs-appctl dpctl/dump-flows | \
+                         grep -q 'dst=00:00:5e:00:53:02'; then \
+                      break; \
+                  fi; \
+                  sleep 0.1; \
+              done; \
+          done])
+AT_CHECK([test -s p1-packet])
+OVS_WAIT_UNTIL([ovs-appctl dpctl/dump-flows | \
+                grep 'dst=00:00:5e:00:53:01'])
+
+dnl Existing datapath hashes select a concrete weighted nexthop.
+AT_CHECK([for hash in `seq 1 16`; do \
+              printf '%s ' "$hash"; \
+              ovs-appctl ofproto/trace int-br \
+                   "in_port=LOCAL,dp_hash($hash),\
+                   dl_src=00:00:00:00:00:01,\
+                   dl_dst=00:00:00:00:00:02,dl_type=0x0800,\
+                   nw_src=10.0.0.1,nw_dst=10.0.0.2,\
+                   nw_proto=17,udp_src=1000,udp_dst=2000" | tail -1; \
+          done > trace.out])
+AT_CHECK([grep -c 'dst=00:00:5e:00:53:01' trace.out], [0], [4
+])
+AT_CHECK([grep -c 'dst=00:00:5e:00:53:02' trace.out], [0], [12
+])
+AT_CHECK([grep 'dst=00:00:5e:00:53:01' trace.out | \
+          grep -q 'src=192.0.2.10'])
+AT_CHECK([grep 'dst=00:00:5e:00:53:02' trace.out | \
+          grep -q 'src=198.51.100.10'])
+AT_CHECK([sed -n '/dst=00:00:5e:00:53:01/ { s/ .*//; p; q; }' \
+          trace.out > p1-hash])
+AT_CHECK([test -s p1-hash])
+
+dnl Without dp_hash, use the standard datapath hash and recirculation path.
+AT_CHECK([ovs-appctl ofproto/trace int-br \
+              "in_port=LOCAL,\
+               dl_src=00:00:00:00:00:01,\
+               dl_dst=00:00:00:00:00:02,dl_type=0x0800,\
+               nw_src=10.0.0.1,nw_dst=10.0.0.2,\
+               nw_proto=17,udp_src=1000,udp_dst=2000" \
+          > trace-recirculate.out])
+AT_CHECK([grep -q 'native tunnel ECMP using dp_hash, recirculating' \
+          trace-recirculate.out])
+AT_CHECK([grep -q 'Datapath actions: hash(sym_l4(0)),recirc' \
+          trace-recirculate.out])
+
+dnl Datapaths without recirculation retain direct inner-flow selection.
+AT_CHECK([ovs-appctl dpif/set-dp-features int-br recirc false])
+AT_CHECK([for port in `seq 1000 1063`; do \
+              ovs-appctl ofproto/trace int-br \
+                  "in_port=LOCAL,\
+                   dl_src=00:00:00:00:00:01,\
+                   dl_dst=00:00:00:00:00:02,dl_type=0x0800,\
+                   nw_src=10.0.0.1,nw_dst=10.0.0.2,\
+                   nw_proto=17,udp_src=$port,udp_dst=2000" | tail -1; \
+          done > trace-5tuple.out])
+AT_CHECK([grep -q 'dst=00:00:5e:00:53:01' trace-5tuple.out])
+AT_CHECK([grep -q 'dst=00:00:5e:00:53:02' trace-5tuple.out])
+AT_CHECK([ovs-appctl dpif/set-dp-features int-br recirc true])
+
+dnl Carrier loss must exclude the failed nexthop for the same datapath hash.
+AT_CHECK([ip link set p1-peer down])
+OVS_WAIT_UNTIL([ovs-appctl ovs/route/show | grep 203.0.113.0/24 | \
+                grep 'p1-route.*flags 0x10'])
+AT_CHECK([ovs-appctl revalidator/wait])
+OVS_WAIT_UNTIL([! ovs-appctl dpctl/dump-flows | \
+                  grep -q 'dst=00:00:5e:00:53:01'])
+OVS_WAIT_UNTIL([check_tunnel_packet p2-peer \
+                00:00:5e:00:53:02])
+AT_CHECK([ovs-appctl ofproto/trace int-br \
+              "in_port=LOCAL,dp_hash(`cat p1-hash`),\
+               dl_src=00:00:00:00:00:01,\
+               dl_dst=00:00:00:00:00:02,dl_type=0x0800,\
+               nw_src=10.0.0.1,nw_dst=10.0.0.2,\
+               nw_proto=17,udp_src=1000,udp_dst=2000" | tail -1 | \
+          grep 'dst=00:00:5e:00:53:02' | \
+          grep -q 'src=198.51.100.10'])
+AT_CHECK([ip link set p1-peer up])
+OVS_WAIT_UNTIL([! ovs-appctl ovs/route/show | grep 203.0.113.0/24 | \
+                  grep -q 'p1-route.*flags 0x10'])
+AT_CHECK([ovs-appctl revalidator/wait])
+OVS_WAIT_UNTIL([! ovs-appctl dpctl/dump-flows | \
+                  grep -q 'dst=00:00:5e:00:53:02'])
+OVS_WAIT_UNTIL([check_tunnel_packet p1-peer \
+                00:00:5e:00:53:01])
+AT_CHECK([ovs-appctl ofproto/trace int-br \
+              "in_port=LOCAL,dp_hash(`cat p1-hash`),\
+               dl_src=00:00:00:00:00:01,\
+               dl_dst=00:00:00:00:00:02,dl_type=0x0800,\
+               nw_src=10.0.0.1,nw_dst=10.0.0.2,\
+               nw_proto=17,udp_src=1000,udp_dst=2000" | tail -1 | \
+          grep 'dst=00:00:5e:00:53:01' | \
+          grep -q 'src=192.0.2.10'])
+
+dnl A route change must update subsequent tunnel translations.
+AT_CHECK([ip route replace 203.0.113.0/24 via 198.51.100.1 \
+          dev p2-route])
+OVS_WAIT_UNTIL_EQUAL([ovs-appctl ovs/route/show | grep 203.0.113.0/24], [dnl
+Cached: 203.0.113.0/24 dev p2-route GW 198.51.100.1 SRC 198.51.100.10])
+AT_CHECK([ovs-appctl revalidator/wait])
+OVS_WAIT_UNTIL([! ovs-appctl dpctl/dump-flows | \
+                  grep -q 'dst=00:00:5e:00:53:01'])
+OVS_WAIT_UNTIL([check_tunnel_packet p2-peer \
+                00:00:5e:00:53:02])
+AT_CHECK([ovs-appctl ofproto/trace int-br \
+              "in_port=LOCAL,dp_hash(`cat p1-hash`),\
+               dl_src=00:00:00:00:00:01,\
+               dl_dst=00:00:00:00:00:02,dl_type=0x0800,\
+               nw_src=10.0.0.1,nw_dst=10.0.0.2,\
+               nw_proto=17,udp_src=1000,udp_dst=2000" | tail -1 | \
+          grep 'dst=00:00:5e:00:53:02' | \
+          grep -q 'src=198.51.100.10'])
+
+OVS_TRAFFIC_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([ovs-route - add system route - ipv4 via multiple ipv6 nexthop])
 AT_KEYWORDS([route])
 OVS_TRAFFIC_VSWITCHD_START()
 
-dnl Create tap ports.
-AT_CHECK([ip tuntap add name p1-route mode tap])
+dnl Create carrier-up ports so link-down nexthops are not selected.
+AT_CHECK([ip link add p1-route type veth peer name p1-peer])
 AT_CHECK([ip link set p1-route up])
+AT_CHECK([ip link set p1-peer up])
 on_exit 'ip link del p1-route'
-AT_CHECK([ip tuntap add name p2-route mode tap])
+AT_CHECK([ip link add p2-route type veth peer name p2-peer])
 AT_CHECK([ip link set p2-route up])
+AT_CHECK([ip link set p2-peer up])
 on_exit 'ip link del p2-route'
 
 AT_CHECK([ip -6 addr add fc00:db8:dead::10/64 dev p1-route], [0], [stdout])
