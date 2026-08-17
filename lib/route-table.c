@@ -758,6 +758,7 @@ rules_change(const struct route_table_msg *change OVS_UNUSED,
 static void
 nexthop_table_change(void *aux OVS_UNUSED)
 {
+    ovs_router_nexthop_table_change();
     route_table_valid = false;
 }
 

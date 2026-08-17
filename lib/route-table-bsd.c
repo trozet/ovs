@@ -191,11 +191,17 @@ route_table_get_change_seq(void)
     return 0;
 }
 
+static void
+nexthop_table_change(void *aux OVS_UNUSED)
+{
+    ovs_router_nexthop_table_change();
+}
+
 void
 route_table_init(void)
 {
     ovs_router_init();
-    nexthop_table_init(NULL, NULL);
+    nexthop_table_init(nexthop_table_change, NULL);
 }
 
 void

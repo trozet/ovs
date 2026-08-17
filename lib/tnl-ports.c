@@ -41,6 +41,7 @@ struct ip_device {
     struct eth_addr mac;
     struct in6_addr *addr;
     int n_addr;
+    unsigned int ref_cnt;
     uint64_t change_seq;
     struct ovs_list node;
     char dev_name[IFNAMSIZ];
@@ -389,7 +390,7 @@ map_insert_ipdev(struct ip_device *ip_dev)
 
 static void
 insert_ipdev__(struct netdev *dev,
-               struct in6_addr *addr, int n_addr)
+               struct in6_addr *addr, int n_addr, unsigned int ref_cnt)
 {
     struct ip_device *ip_dev;
     enum netdev_flags flags;
@@ -402,6 +403,7 @@ insert_ipdev__(struct netdev *dev,
 
     ip_dev = xzalloc(sizeof *ip_dev);
     ip_dev->dev = netdev_ref(dev);
+    ip_dev->ref_cnt = ref_cnt;
     ip_dev->change_seq = netdev_get_change_seq(dev);
     error = netdev_get_etheraddr(ip_dev->dev, &ip_dev->mac);
     if (error) {
@@ -422,7 +424,7 @@ err:
 }
 
 static void
-insert_ipdev(const char dev_name[])
+insert_ipdev(const char dev_name[], unsigned int ref_cnt)
 {
     struct in6_addr *addr, *mask;
     struct netdev *dev;
@@ -439,7 +441,7 @@ insert_ipdev(const char dev_name[])
         return;
     }
     free(mask);
-    insert_ipdev__(dev, addr, n_in6);
+    insert_ipdev__(dev, addr, n_in6, ref_cnt);
     netdev_close(dev);
 }
 
@@ -468,15 +470,38 @@ tnl_port_map_insert_ipdev(const char dev_name[])
     LIST_FOR_EACH_SAFE (ip_dev, node, &addr_list) {
         if (!strcmp(netdev_get_name(ip_dev->dev), dev_name)) {
             if (ip_dev->change_seq == netdev_get_change_seq(ip_dev->dev)) {
+                ip_dev->ref_cnt++;
                 goto out;
             }
             /* Address changed. */
+            unsigned int ref_cnt = ip_dev->ref_cnt + 1;
+
             delete_ipdev(ip_dev);
+            insert_ipdev(dev_name, ref_cnt);
+            goto out;
         }
     }
-    insert_ipdev(dev_name);
+    insert_ipdev(dev_name, 1);
 
 out:
+    ovs_mutex_unlock(&mutex);
+}
+
+void
+tnl_port_map_unref_ipdev(const char dev_name[])
+{
+    struct ip_device *ip_dev;
+
+    ovs_mutex_lock(&mutex);
+    LIST_FOR_EACH_SAFE (ip_dev, node, &addr_list) {
+        if (!strcmp(netdev_get_name(ip_dev->dev), dev_name)) {
+            ovs_assert(ip_dev->ref_cnt);
+            if (!--ip_dev->ref_cnt) {
+                delete_ipdev(ip_dev);
+            }
+            break;
+        }
+    }
     ovs_mutex_unlock(&mutex);
 }
 
@@ -489,6 +514,7 @@ tnl_port_map_delete_ipdev(const char dev_name[])
     LIST_FOR_EACH_SAFE (ip_dev, node, &addr_list) {
         if (!strcmp(netdev_get_name(ip_dev->dev), dev_name)) {
             delete_ipdev(ip_dev);
+            break;
         }
     }
     ovs_mutex_unlock(&mutex);
@@ -502,6 +528,7 @@ tnl_port_map_run(void)
     ovs_mutex_lock(&mutex);
     LIST_FOR_EACH_SAFE (ip_dev, node, &addr_list) {
         char dev_name[IFNAMSIZ];
+        unsigned int ref_cnt;
 
         if (ip_dev->change_seq == netdev_get_change_seq(ip_dev->dev)) {
             continue;
@@ -509,8 +536,9 @@ tnl_port_map_run(void)
 
         /* Address changed. */
         ovs_strlcpy_arrays(dev_name, ip_dev->dev_name);
+        ref_cnt = ip_dev->ref_cnt;
         delete_ipdev(ip_dev);
-        insert_ipdev(dev_name);
+        insert_ipdev(dev_name, ref_cnt);
     }
     ovs_mutex_unlock(&mutex);
 }
