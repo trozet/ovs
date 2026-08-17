@@ -97,6 +97,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/dpif-offload-dummy.c \
 	lib/dpif-offload-provider.h \
 	lib/dpif-provider.h \
+	lib/dp-hash-map.c \
+	lib/dp-hash-map.h \
 	lib/dpif.c \
 	lib/dpif.h \
 	lib/heap.c \

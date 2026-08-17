@@ -5290,12 +5290,9 @@ group_dpif_credit_stats(struct group_dpif *group,
 
 /* Calculate the dp_hash mask needed to provide the least weighted bucket
  * with at least one hash value and construct a mapping table from masked
- * dp_hash value to group bucket using the Webster method.
+ * dp_hash value to group bucket.
  * If the caller specifies a non-zero max_hash value, abort and return false
- * if more hash values would be required. The absolute maximum number of
- * hash values supported is 256. */
-
-#define MAX_SELECT_GROUP_HASH_VALUES 256
+ * if more hash values would be required. */
 
 static bool
 group_setup_dp_hash_table(struct group_dpif *group, size_t max_hash)
@@ -5304,83 +5301,57 @@ group_setup_dp_hash_table(struct group_dpif *group, size_t max_hash)
     uint32_t n_buckets = group->up.n_buckets;
     uint64_t total_weight = 0;
     uint16_t min_weight = UINT16_MAX;
-    struct webster {
-        struct ofputil_bucket *bucket;
-        uint32_t divisor;
-        double value;
-        int hits;
-    } *webster;
 
     if (n_buckets == 0) {
         VLOG_DBG("  Don't apply dp_hash method without buckets.");
         return false;
     }
 
-    webster = xcalloc(n_buckets, sizeof(struct webster));
-    int i = 0;
+    uint32_t *weights = xcalloc(n_buckets, sizeof *weights);
+    group->hash_buckets = xcalloc(n_buckets, sizeof *group->hash_buckets);
+    size_t i = 0;
     LIST_FOR_EACH (bucket, list_node, &group->up.buckets) {
-        if (bucket->weight > 0 && bucket->weight < min_weight) {
+        group->hash_buckets[i] = bucket;
+        weights[i] = bucket->weight;
+        if (bucket->weight && bucket->weight < min_weight) {
             min_weight = bucket->weight;
         }
         total_weight += bucket->weight;
-        webster[i].bucket = bucket;
-        webster[i].divisor = 1;
-        webster[i].value = bucket->weight;
-        webster[i].hits = 0;
         i++;
     }
-
-    if (total_weight == 0) {
-        VLOG_DBG("  Total weight is zero. No active buckets.");
-        free(webster);
-        return false;
-    }
-    VLOG_DBG("  Minimum weight: %d, total weight: %"PRIu64,
-             min_weight, total_weight);
-
-    uint64_t min_slots = DIV_ROUND_UP(total_weight, min_weight);
-    uint64_t min_slots2 =
-        MAX(min_slots, MIN(n_buckets * 4, MAX_SELECT_GROUP_HASH_VALUES));
-    uint64_t min_slots3 = ROUND_UP_POW2(min_slots2);
-    uint64_t n_hash = MAX(16, min_slots3);
-    if (n_hash > MAX_SELECT_GROUP_HASH_VALUES ||
-        (max_hash != 0 && n_hash > max_hash)) {
-        VLOG_DBG("  Too many hash values required: %"PRIu64, n_hash);
-        free(webster);
-        return false;
+    if (total_weight) {
+        VLOG_DBG("  Minimum weight: %d, total weight: %"PRIu64,
+                 min_weight, total_weight);
     }
 
-    VLOG_DBG("  Using %"PRIu64" hash values:", n_hash);
-    group->hash_mask = n_hash - 1;
-    if (group->hash_map) {
-        free(group->hash_map);
-    }
-    group->hash_map = xcalloc(n_hash, sizeof(struct ofputil_bucket *));
-
-    /* Use Webster method to distribute hash values over buckets. */
-    for (int hash = 0; hash < n_hash; hash++) {
-        struct webster *winner = &webster[0];
-        for (i = 1; i < n_buckets; i++) {
-            if (webster[i].value > winner->value) {
-                winner = &webster[i];
-            }
+    if (!dp_hash_map_init(&group->hash_map, weights, n_buckets, max_hash)) {
+        if (!total_weight) {
+            VLOG_DBG("  Total weight is zero. No active buckets.");
+        } else {
+            VLOG_DBG("  Too many hash values required: %"PRIuSIZE,
+                     group->hash_map.n_hash);
         }
-        winner->hits++;
-        winner->divisor += 2;
-        winner->value = (double) winner->bucket->weight / winner->divisor;
-        group->hash_map[hash] = winner->bucket;
+        free(group->hash_buckets);
+        group->hash_buckets = NULL;
+        free(weights);
+        return false;
     }
+    VLOG_DBG("  Using %"PRIuSIZE" hash values:", group->hash_map.n_hash);
 
-    i = 0;
-    LIST_FOR_EACH (bucket, list_node, &group->up.buckets) {
-        double target = (n_hash * bucket->weight) / (double) total_weight;
-        VLOG_DBG("  Bucket %d: weight=%d, target=%.2f hits=%d",
-                 bucket->bucket_id, bucket->weight,
-                 target, webster[i].hits);
-        i++;
+    unsigned int *hits = xcalloc(n_buckets, sizeof *hits);
+    for (size_t hash = 0; hash < group->hash_map.n_hash; hash++) {
+        hits[group->hash_map.members[hash]]++;
     }
+    for (i = 0; i < n_buckets; i++) {
+        double target =
+            (group->hash_map.n_hash * weights[i]) / (double) total_weight;
 
-    free(webster);
+        VLOG_DBG("  Bucket %d: weight=%d, target=%.2f hits=%u",
+                 group->hash_buckets[i]->bucket_id, weights[i], target,
+                 hits[i]);
+    }
+    free(hits);
+    free(weights);
     return true;
 }
 
@@ -5401,7 +5372,7 @@ group_set_selection_method(struct group_dpif *group)
             group->hash_alg = OVS_HASH_ALG_SYM_L4;
             group->hash_basis = 0;
             VLOG_DBG("Use dp_hash with %d hash values using algorithm %d.",
-                     group->hash_mask + 1, group->hash_alg);
+                     group->hash_map.hash_mask + 1, group->hash_alg);
         } else {
             /* Fall back to original default hashing in slow path. */
             VLOG_DBG("Falling back to default hash method.");
@@ -5420,7 +5391,7 @@ group_set_selection_method(struct group_dpif *group)
             }
             group->hash_basis = (uint32_t) props->selection_method_param;
             VLOG_DBG("Use dp_hash with %d hash values using algorithm %d.",
-                     group->hash_mask + 1, group->hash_alg);
+                     group->hash_map.hash_mask + 1, group->hash_alg);
         } else {
             /* Fall back to original default hashing in slow path. */
             VLOG_DBG("Falling back to default hash method.");
@@ -5454,7 +5425,8 @@ group_construct(struct ofgroup *group_)
     ovs_mutex_init_adaptive(&group->stats_mutex);
     ovs_mutex_lock(&group->stats_mutex);
     group_construct_stats(group);
-    group->hash_map = NULL;
+    group->hash_map = (struct dp_hash_map) { 0 };
+    group->hash_buckets = NULL;
     if (group->up.type == OFPGT11_SELECT) {
         VLOG_DBG("Constructing select group %"PRIu32, group->up.group_id);
         group_set_selection_method(group);
@@ -5468,10 +5440,9 @@ group_destruct(struct ofgroup *group_)
 {
     struct group_dpif *group = group_dpif_cast(group_);
     ovs_mutex_destroy(&group->stats_mutex);
-    if (group->hash_map) {
-        free(group->hash_map);
-        group->hash_map = NULL;
-    }
+    dp_hash_map_destroy(&group->hash_map);
+    free(group->hash_buckets);
+    group->hash_buckets = NULL;
 }
 
 static void
@@ -5479,10 +5450,9 @@ group_modify(struct ofgroup *group_)
 {
     struct group_dpif *group = group_dpif_cast(group_);
 
-    if (group->hash_map) {
-        free(group->hash_map);
-        group->hash_map = NULL;
-    }
+    dp_hash_map_destroy(&group->hash_map);
+    free(group->hash_buckets);
+    group->hash_buckets = NULL;
     if (group->up.type == OFPGT11_SELECT) {
         VLOG_DBG("Modifying select group %"PRIu32, group->up.group_id);
         group_set_selection_method(group);

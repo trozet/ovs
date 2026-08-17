@@ -46,6 +46,7 @@
 
 #include <stdint.h>
 
+#include "dp-hash-map.h"
 #include "dpif.h"
 #include "fail-open.h"
 #include "hmapx.h"
@@ -133,8 +134,8 @@ struct group_dpif {
     enum group_selection_method selection_method;
     enum ovs_hash_alg hash_alg;         /* dp_hash algorithm to be applied. */
     uint32_t hash_basis;                /* Basis for dp_hash. */
-    uint32_t hash_mask;                 /* Used to mask dp_hash (2^N - 1).*/
-    struct ofputil_bucket **hash_map;   /* Map hash values to buckets. */
+    struct dp_hash_map hash_map;        /* Maps dp_hash to bucket indexes. */
+    struct ofputil_bucket **hash_buckets;
 };
 
 void group_dpif_credit_stats(struct group_dpif *,
