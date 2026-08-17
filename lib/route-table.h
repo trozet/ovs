@@ -106,6 +106,10 @@ struct route_data_nexthop {
 
     sa_family_t family;
     struct in6_addr addr;
+    uint32_t ifindex;
+    uint32_t nh_id;
+    uint32_t flags;
+    uint32_t weight;
     char ifname[IFNAMSIZ]; /* Interface name. */
 };
 
@@ -141,6 +145,8 @@ struct route_data {
     uint32_t rta_mark;           /* 0 if missing. */
     uint32_t rta_table_id;       /* 0 if missing. */
     uint32_t rta_priority;       /* 0 if missing. */
+    uint16_t *nh_hash_map;       /* Optional nexthop selection table. */
+    size_t n_nh_hash;
 };
 
 struct rule_data {

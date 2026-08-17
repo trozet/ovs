@@ -32,6 +32,7 @@
 #include <unistd.h>
 
 #include "ovs-router.h"
+#include "nexthop-table.h"
 #include "packets.h"
 #include "openvswitch/vlog.h"
 #include "util.h"
@@ -194,14 +195,17 @@ void
 route_table_init(void)
 {
     ovs_router_init();
+    nexthop_table_init(NULL, NULL);
 }
 
 void
 route_table_run(void)
 {
+    nexthop_table_run();
 }
 
 void
 route_table_wait(void)
 {
+    nexthop_table_wait();
 }

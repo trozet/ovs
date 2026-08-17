@@ -73,6 +73,32 @@ AC_DEFUN([OVS_CHECK_LINUX_NETLINK], [
     [AC_DEFINE([HAVE_RTA_VIA], [1],
     [Define to 1 if struct rtvia is available.])])
 
+  AC_CHECK_MEMBERS([struct nexthop_grp.weight_high], [], [],
+                   [[#include <linux/nexthop.h>]])
+
+  AC_COMPILE_IFELSE([
+    AC_LANG_PROGRAM([#include <linux/nexthop.h>], [
+        int fdb = NHA_FDB;
+    ])],
+    [AC_DEFINE([HAVE_NHA_FDB], [1],
+    [Define to 1 if NHA_FDB is available.])])
+
+  AC_MSG_CHECKING([for resilient nexthop group UAPI])
+  AC_COMPILE_IFELSE([
+    AC_LANG_PROGRAM([
+      #include <linux/nexthop.h>
+      #include <linux/rtnetlink.h>
+    ], [
+      int group_type = NEXTHOP_GRP_TYPE_RES;
+      int group_attr = NHA_RES_GROUP;
+      int bucket_attr = NHA_RES_BUCKET;
+      int bucket_msg = RTM_GETNEXTHOPBUCKET;
+    ])],
+    [AC_MSG_RESULT([yes])
+     AC_DEFINE([HAVE_NEXTHOP_RESILIENT_GROUPS], [1],
+     [Define to 1 if resilient nexthop group UAPI is available.])],
+    [AC_MSG_RESULT([no])])
+
   AC_COMPILE_IFELSE([
     AC_LANG_PROGRAM([#include <linux/if_link.h>], [
         int netnsid =  IFLA_IF_NETNSID;

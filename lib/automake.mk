@@ -172,6 +172,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/netlink.h \
 	lib/netnsid.c \
 	lib/netnsid.h \
+	lib/nexthop-table.c \
+	lib/nexthop-table.h \
 	lib/nx-match.c \
 	lib/nx-match.h \
 	lib/object-collection.c \
@@ -272,6 +274,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/rculist.h \
 	lib/reconnect.c \
 	lib/reconnect.h \
+	lib/route-table-common.c \
+	lib/route-table.h \
 	lib/rstp.c \
 	lib/rstp.h \
 	lib/rstp-common.h \
@@ -424,7 +428,6 @@ lib_libopenvswitch_la_SOURCES += \
 	lib/rtnetlink.c \
 	lib/rtnetlink.h \
 	lib/route-table.c \
-	lib/route-table.h \
 	lib/tc.c \
 	lib/tc.h
 endif

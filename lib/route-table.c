@@ -33,6 +33,7 @@
 #include "netlink.h"
 #include "netlink-notifier.h"
 #include "netlink-socket.h"
+#include "nexthop-table.h"
 #include "openvswitch/list.h"
 #include "openvswitch/ofpbuf.h"
 #include "ovs-router.h"
@@ -98,24 +99,7 @@ static void route_map_clear(void);
 
 static void name_table_init(void);
 static void name_table_change(const struct rtnetlink_change *, void *);
-
-static void
-route_data_destroy_nexthops__(struct route_data *rd)
-{
-    struct route_data_nexthop *rdnh;
-
-    LIST_FOR_EACH_POP (rdnh, nexthop_node, &rd->nexthops) {
-        if (rdnh && rdnh != &rd->primary_next_hop__) {
-            free(rdnh);
-        }
-    }
-}
-
-void
-route_data_destroy(struct route_data *rd)
-{
-    route_data_destroy_nexthops__(rd);
-}
+static void nexthop_table_change(void *);
 
 uint64_t
 route_table_get_change_seq(void)
@@ -153,6 +137,7 @@ route_table_init(void)
         nln_notifier_create(nln, RTNLGRP_IPV6_RULE,
                             (nln_notify_func *) rules_change, NULL);
 
+    nexthop_table_init(nexthop_table_change, NULL);
     route_table_reset();
     name_table_init();
 
@@ -166,6 +151,7 @@ route_table_run(void)
 {
     ovs_mutex_lock(&route_table_mutex);
     if (nln) {
+        nexthop_table_run();
         rtnetlink_run();
         nln_run(nln);
 
@@ -183,6 +169,7 @@ route_table_wait(void)
 {
     ovs_mutex_lock(&route_table_mutex);
     if (nln) {
+        nexthop_table_wait();
         rtnetlink_wait();
         nln_wait(nln);
     }
@@ -484,6 +471,9 @@ route_table_parse__(struct ofpbuf *buf, size_t ofs,
 
     struct nlattr *attrs[ARRAY_SIZE(policy)];
 
+    memset(change, 0, sizeof *change);
+    ovs_list_init(&change->rd.nexthops);
+
     if (rtm->rtm_family == AF_INET) {
         parsed = nl_policy_parse(buf, ofs, policy, attrs,
                                  ARRAY_SIZE(policy));
@@ -500,9 +490,6 @@ route_table_parse__(struct ofpbuf *buf, size_t ofs,
         struct route_data_nexthop *rdnh = NULL;
         int rta_oif;      /* Output interface index. */
 
-        memset(change, 0, sizeof *change);
-
-        ovs_list_init(&change->rd.nexthops);
         rdnh = rtnh ? xzalloc(sizeof *rdnh) : &change->rd.primary_next_hop__;
         ovs_list_insert(&change->rd.nexthops, &rdnh->nexthop_node);
 
@@ -646,7 +633,7 @@ route_table_parse__(struct ofpbuf *buf, size_t ofs,
              *
              * Before retrieving those we need to remove the empty rdnh entry
              * from the list. */
-            route_data_destroy_nexthops__(&change->rd);
+            route_data_destroy(&change->rd);
 
             NL_NESTED_FOR_EACH (nla, left, attrs[RTA_MULTIPATH]) {
                 struct route_table_msg mp_change;
@@ -682,7 +669,7 @@ route_table_parse__(struct ofpbuf *buf, size_t ofs,
         /* Ensure that the change->rd->nexthops list is cleared in cases when
          * the route does not need a next hop. */
         if (!route_type_needs_nexthop(rtm->rtm_type)) {
-            route_data_destroy_nexthops__(&change->rd);
+            route_data_destroy(&change->rd);
         }
     } else {
         VLOG_DBG_RL(&rl, "received unparseable rtnetlink route message");
@@ -766,6 +753,12 @@ rules_change(const struct route_table_msg *change OVS_UNUSED,
     if (!change || change->relevant) {
         rules_valid = false;
     }
+}
+
+static void
+nexthop_table_change(void *aux OVS_UNUSED)
+{
+    route_table_valid = false;
 }
 
 static void
