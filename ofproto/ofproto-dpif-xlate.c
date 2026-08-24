@@ -3793,6 +3793,30 @@ tnl_send_arp_request(struct xlate_ctx *ctx, const struct xport *out_dev,
 }
 
 static void
+tnl_send_neigh_request(struct xlate_ctx *ctx, const struct xport *out_dev,
+                       const struct eth_addr eth_src,
+                       const struct in6_addr *ip_src,
+                       const struct in6_addr *ip_dst)
+{
+    struct in6_addr nh_src = in6addr_any;
+    struct in6_addr nh_dst = *ip_dst;
+    ovs_be32 ip4_dst = in6_addr_get_mapped_ipv4(ip_dst);
+
+    COVERAGE_INC(xlate_actions_neigh_sent);
+    if (ovs_router_get_netdev_source_address(
+            ip_dst, netdev_get_name(out_dev->netdev), &nh_src)) {
+        nh_src = *ip_src;
+    }
+
+    if (ip4_dst) {
+        tnl_send_arp_request(ctx, out_dev, eth_src,
+                             in6_addr_get_mapped_ipv4(&nh_src), ip4_dst);
+    } else {
+        tnl_send_nd_request(ctx, out_dev, eth_src, &nh_src, &nh_dst);
+    }
+}
+
+static void
 propagate_tunnel_data_to_flow__(struct flow *dst_flow,
                                 const struct flow *src_flow,
                                 struct eth_addr dmac, struct eth_addr smac,
@@ -3894,6 +3918,8 @@ native_tunnel_output(struct xlate_ctx *ctx, const struct xport *xport,
     struct in6_addr d_ip6 = in6addr_any;
     struct eth_addr smac;
     struct eth_addr dmac;
+    bool stale;
+    bool probe;
     int err;
     char buf_sip6[INET6_ADDRSTRLEN];
     char buf_dip6[INET6_ADDRSTRLEN];
@@ -3943,10 +3969,9 @@ native_tunnel_output(struct xlate_ctx *ctx, const struct xport *xport,
         s_ip = in6_addr_get_mapped_ipv4(&s_ip6);
     }
 
-    err = tnl_neigh_lookup(out_dev->xbridge->name, &d_ip6, &dmac, true);
+    err = tnl_neigh_lookup(out_dev->xbridge->name, &d_ip6, &dmac, true,
+                           &stale, &probe);
     if (err) {
-        struct in6_addr nh_s_ip6 = in6addr_any;
-
         put_cloned_drop_action(ctx->xbridge->ofproto, ctx->odp_actions,
                                XLATE_TUNNEL_NEIGH_CACHE_MISS,
                                !is_last_action);
@@ -3962,24 +3987,19 @@ native_tunnel_output(struct xlate_ctx *ctx, const struct xport *xport,
                      "neighbor cache miss for %s on bridge %s, "
                      "sending %s request",
                      buf_dip6, out_dev->xbridge->name, d_ip ? "ARP" : "ND");
-        COVERAGE_INC(xlate_actions_neigh_sent);
-
-        err = ovs_router_get_netdev_source_address(
-            &d_ip6, netdev_get_name(out_dev->netdev), &nh_s_ip6);
-
-        if (err) {
-            nh_s_ip6 = s_ip6;
-        }
-
-        if (d_ip) {
-            ovs_be32 nh_s_ip;
-
-            nh_s_ip = in6_addr_get_mapped_ipv4(&nh_s_ip6);
-            tnl_send_arp_request(ctx, out_dev, smac, nh_s_ip, d_ip);
-        } else {
-            tnl_send_nd_request(ctx, out_dev, smac, &nh_s_ip6, &d_ip6);
-        }
+        tnl_send_neigh_request(ctx, out_dev, smac, &s_ip6, &d_ip6);
         return err;
+    }
+
+    if (stale) {
+        ctx->xout->avoid_caching = true;
+    }
+    if (probe) {
+        xlate_report(ctx, OFT_DETAIL,
+                     "neighbor cache stale for %s on bridge %s, "
+                     "sending %s request",
+                     buf_dip6, out_dev->xbridge->name, d_ip ? "ARP" : "ND");
+        tnl_send_neigh_request(ctx, out_dev, smac, &s_ip6, &d_ip6);
     }
 
     if (ctx->xin->xcache) {
