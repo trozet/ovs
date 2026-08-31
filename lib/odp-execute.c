@@ -1014,7 +1014,7 @@ odp_execute_actions(void *dp, struct dp_packet_batch *batch, bool steal,
                     flow_extract(packet, &flow);
                     hash = flow_hash_symmetric_l3l4(&flow,
                                                     hash_act->hash_basis,
-                                                    false);
+                                                    true);
                     packet->md.dp_hash = hash;
                 }
                 break;
