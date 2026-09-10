@@ -30,7 +30,11 @@ void tnl_port_map_insert(odp_port_t, ovs_be16 tp_port,
                          const char dev_name[], const char type[]);
 
 void tnl_port_map_delete(odp_port_t, const char type[]);
+
+/* Route entries hold references to IP devices used by tunnel ports. */
 void tnl_port_map_insert_ipdev(const char dev[]);
+void tnl_port_map_unref_ipdev(const char dev[]);
+/* Force deletion when the underlying interface is removed. */
 void tnl_port_map_delete_ipdev(const char dev[]);
 void tnl_port_map_run(void);
 

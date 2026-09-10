@@ -204,6 +204,27 @@ To add route::
     $ ovs-appctl ovs/route/add <IP address>/<prefix length>
                                <output-bridge-name> <gw> [table=ID]
 
+To add a multipath route, first create its nexthops and group.  These commands
+are available with the dummy and non-Linux datapaths as well as on Linux::
+
+    $ ovs-appctl ovs/nexthop/add <id> dev <name> [via <gw>] [flags <flags>]
+    $ ovs-appctl ovs/nexthop/group/add <group-id> \
+          nexthop <id> [weight <weight>] \
+          nexthop <id> [weight <weight>] \
+          [bucket <id>|unassigned] ...
+    $ ovs-appctl ovs/route/add <IP address>/<prefix length> \
+          nhid <group-id> [table=ID]
+
+A ``bucket`` references a group member and can be repeated to supply a
+resilient group's bucket assignment.  Use ``unassigned`` for a bucket without
+a member.  Both add commands replace an existing manually configured entry
+with the same ID and return ``OK``.  An invalid replacement leaves the existing
+entry unchanged.  Manually configured nexthops take precedence over system
+nexthops with the same ID.  To display or delete manual nexthops and groups::
+
+    $ ovs-appctl ovs/nexthop/show
+    $ ovs-appctl ovs/nexthop/del <id>
+
 To see all routes configured::
 
     $ ovs-appctl ovs/route/show [table=ID|all]
@@ -226,6 +247,17 @@ To delete route::
 To look up and display the route for a destination::
 
     $ ovs-appctl ovs/route/lookup <IP address> [src=IP]
+
+For a multipath route, lookup displays the complete nexthop group instead of
+selecting a member.  OVS selects a member using the packet hash during normal
+forwarding.
+
+Native tunnel output supports weighted multipath routes and nexthop groups.
+On Linux, OVS caches nexthop objects from netlink in the same generic table
+used by the appctl commands.  OVS uses the datapath hash to select a stable,
+usable nexthop.  If no datapath hash is available, OVS recirculates with a
+packet hash when supported and otherwise selects from the inner flow directly.
+Resilient nexthop groups preserve explicit bucket assignments.
 
 ARP
 ~~~

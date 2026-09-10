@@ -166,6 +166,98 @@ User: 2001:db8:beef::14/128 MARK 14 dev br0 GW 2001:db8:cafe::1 SRC 2001:db8:caf
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([appctl - multipath route group])
+AT_KEYWORDS([ovs_router])
+OVS_VSWITCHD_START(
+  [add-port br0 p1 -- set Interface p1 type=dummy -- \
+   add-port br0 p2 -- set Interface p2 type=dummy])
+AT_CHECK([ovs-appctl netdev-dummy/ip4addr p1 192.0.2.10/24], [0], [OK
+])
+AT_CHECK([ovs-appctl netdev-dummy/ip4addr p2 198.51.100.10/24], [0], [OK
+])
+
+AT_CHECK([ovs-appctl ovs/nexthop/add 101 dev p1 via 192.0.2.1], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/nexthop/add 102 dev p2 via 198.51.100.1], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/nexthop/group/add 201 \
+          nexthop 101 weight 1 nexthop 102 weight 3], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/route/add 203.0.113.0/24 nhid 201], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/route/show | grep 'User: 203.0.113.0/24'], [0], [dnl
+User: 203.0.113.0/24 nhid 201 nexthop dev p1 GW 192.0.2.1 SRC 192.0.2.10 weight 1 id 101 nexthop dev p2 GW 198.51.100.1 SRC 198.51.100.10 weight 3 id 102
+])
+AT_CHECK([ovs-appctl ovs/route/lookup 203.0.113.1], [0], [dnl
+nhid 201
+nexthop dev p1 gateway 192.0.2.1 src 192.0.2.10 weight 1 id 101
+nexthop dev p2 gateway 198.51.100.1 src 198.51.100.10 weight 3 id 102
+])
+
+dnl Replacing a member or group automatically refreshes dependent routes.
+AT_CHECK([ovs-appctl ovs/nexthop/add 102 dev p2 via 198.51.100.1 \
+          flags 0x10], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/route/lookup 203.0.113.1], [0], [dnl
+nhid 201
+nexthop dev p1 gateway 192.0.2.1 src 192.0.2.10 weight 1 id 101
+nexthop dev p2 gateway 198.51.100.1 src 198.51.100.10 weight 3 id 102 flags 0x10
+])
+
+dnl Replace the group with an explicit resilient bucket assignment.
+AT_CHECK([ovs-appctl ovs/nexthop/group/add 201 \
+          nexthop 101 weight 1 nexthop 102 weight 1 \
+          bucket 101 bucket 102 bucket unassigned bucket 102], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/route/lookup 203.0.113.1], [0], [dnl
+nhid 201
+nexthop dev p1 gateway 192.0.2.1 src 192.0.2.10 weight 1 id 101
+nexthop dev p2 gateway 198.51.100.1 src 198.51.100.10 weight 1 id 102 flags 0x10
+buckets 101 102 unassigned 102
+])
+
+dnl Invalid replacement must leave the existing group intact.
+AT_CHECK([ovs-appctl ovs/nexthop/group/add 201 \
+          nexthop 101 bucket 999], [2], [], [dnl
+Bucket references unknown nexthop ID 999
+ovs-appctl: ovs-vswitchd: server returned an error
+])
+
+dnl Resilient groups cannot use another group as a member because bucket
+dnl indexes refer directly to the flattened nexthop array.
+AT_CHECK([ovs-appctl ovs/nexthop/group/add 200 \
+          nexthop 101 nexthop 102], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/nexthop/group/add 201 \
+          nexthop 200 bucket 200], [2], [], [dnl
+Resilient group member 200 is a group
+ovs-appctl: ovs-vswitchd: server returned an error
+])
+AT_CHECK([ovs-appctl ovs/route/lookup 203.0.113.1 | grep -c nexthop], [0], [2
+])
+AT_CHECK([ovs-appctl ovs/nexthop/show | grep '^User' | sort], [0], [dnl
+User 101 dev p1 via 192.0.2.1
+User 102 dev p2 via 198.51.100.1 flags 0x10
+User 200 group nexthop 101 weight 1 nexthop 102 weight 1
+User 201 group nexthop 101 weight 1 nexthop 102 weight 1 bucket 101 bucket 102 bucket unassigned bucket 102
+])
+
+AT_CHECK([ovs-appctl ovs/nexthop/del 201], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/route/lookup 203.0.113.1], [2], [], [dnl
+Not found
+ovs-appctl: ovs-vswitchd: server returned an error
+])
+AT_CHECK([ovs-appctl ovs/nexthop/del 200], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/nexthop/del 101], [0], [OK
+])
+AT_CHECK([ovs-appctl ovs/nexthop/del 102], [0], [OK
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([appctl - route/lookup])
 AT_KEYWORDS([ovs_router])
 OVS_VSWITCHD_START([add-port br0 p1 -- set Interface p1 type=dummy])
