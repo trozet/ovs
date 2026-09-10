@@ -753,7 +753,10 @@ tnl_port_build_header(const struct ofport_dpif *ofport,
 
     fat_rwlock_rdlock(&rwlock);
     tnl_port = tnl_find_ofport(ofport);
-    ovs_assert(tnl_port);
+    if (!tnl_port) {
+        fat_rwlock_unlock(&rwlock);
+        return ENODEV;
+    }
     res = netdev_build_header(tnl_port->netdev, data, params);
     fat_rwlock_unlock(&rwlock);
 
