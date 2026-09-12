@@ -1201,6 +1201,52 @@ n_flows=ok n_buckets=ok
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([ofproto-dpif - symmetric dp_hash includes UDP ports])
+
+OVS_VSWITCHD_START
+add_of_ports br0 1 10 11
+
+AT_CHECK([ovs-ofctl -O OpenFlow12 add-group br0 \
+    'group_id=1234,type=select,bucket=output:10,bucket=output:11'])
+AT_CHECK([ovs-ofctl -O OpenFlow12 add-flow br0 \
+    'udp actions=group:1234'])
+
+dp_hash_flow_count () {
+    ovs-appctl dpctl/dump-flows \
+        | sed -n '/recirc_id(0x[[0-9a-f]][[0-9a-f]]*),dp_hash/p' \
+        | wc -l
+}
+
+forward_flow="in_port(1),eth(src=50:54:00:00:00:01,dst=50:54:00:00:00:02),\
+eth_type(0x0800),ipv4(src=192.0.2.1,dst=198.51.100.1,proto=17,\
+tos=0,ttl=64,frag=no)"
+reverse_flow="in_port(1),eth(src=50:54:00:00:00:02,dst=50:54:00:00:00:01),\
+eth_type(0x0800),ipv4(src=198.51.100.1,dst=192.0.2.1,proto=17,\
+tos=0,ttl=64,frag=no)"
+
+AT_CHECK([ovs-appctl netdev-dummy/receive p1 \
+    "$forward_flow,udp(src=10000,dst=4789)"])
+OVS_WAIT_UNTIL_EQUAL([dp_hash_flow_count], [1])
+
+dnl Reversing the complete L3/L4 tuple must produce the same hash.
+AT_CHECK([ovs-appctl netdev-dummy/receive p1 \
+    "$reverse_flow,udp(src=4789,dst=10000)"])
+OVS_WAIT_UNTIL([ovs-appctl dpctl/dump-flows \
+    | grep 'recirc_id(0),' | grep -q 'packets:1'])
+AT_CHECK([dp_hash_flow_count], [0], [1
+])
+
+dnl Vary only the UDP source port.  At least one packet must produce a
+dnl different hash value from the first packet.
+for port in `seq 10001 10016`; do
+    AT_CHECK([ovs-appctl netdev-dummy/receive p1 \
+        "$forward_flow,udp(src=$port,dst=4789)"])
+done
+OVS_WAIT_UNTIL([test `dp_hash_flow_count` -gt 1])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([ofproto-dpif - select group with watch port])
 
 OVS_VSWITCHD_START
