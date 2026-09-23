@@ -51,7 +51,6 @@ enum xc_type {
     XC_NORMAL,
     XC_FIN_TIMEOUT,      /* Calls back to ofproto. */
     XC_GROUP,
-    XC_TNL_NEIGH,
     XC_TUNNEL_HEADER,
 };
 
@@ -111,10 +110,6 @@ struct xc_entry {
             struct group_dpif *group;
             struct ofputil_bucket *bucket;
         } group;
-        struct {
-            char br_name[IFNAMSIZ];
-            struct in6_addr d_ipv6;
-        } tnl_neigh_cache;
         struct {
             struct ofproto_dpif *ofproto;
             struct ofproto_async_msg *am;

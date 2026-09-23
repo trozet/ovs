@@ -372,6 +372,7 @@ type_run(const char *type)
     if (dpif_run(backer->dpif)) {
         backer->need_revalidate = REV_RECONFIGURE;
     }
+    xlate_tnl_neigh_refresh();
 
     udpif_run(backer->udpif);
 
@@ -5172,7 +5173,6 @@ ofproto_dpif_xcache_execute(struct ofproto_dpif *ofproto,
         case XC_MIRROR:
         case XC_NORMAL:
         case XC_GROUP:
-        case XC_TNL_NEIGH:
         case XC_TUNNEL_HEADER:
             xlate_push_stats_entry(entry, stats, false);
             break;
