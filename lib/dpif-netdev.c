@@ -5946,6 +5946,7 @@ dpif_netdev_wait(struct dpif *dpif)
     }
     ovs_rwlock_unlock(&dp->port_rwlock);
     ovs_mutex_unlock(&dp_netdev_mutex);
+    tnl_neigh_cache_wait();
     seq_wait(tnl_conf_seq, dp->last_tnl_conf_seq);
 }
 

@@ -32,13 +32,17 @@
 #include "util.h"
 
 int tnl_neigh_snoop(const struct flow *flow, struct flow_wildcards *wc,
+                    const char br_name[IFNAMSIZ],
                     const char dev_name[IFNAMSIZ], bool allow_update);
 void tnl_neigh_set(const char name[IFNAMSIZ], const struct in6_addr *dst,
-                   const struct eth_addr mac);
+                   const struct eth_addr mac, const char *dev_name);
 int tnl_neigh_lookup(const char dev_name[IFNAMSIZ], const struct in6_addr *dst,
                      struct eth_addr *mac, bool insert_partial);
 void tnl_neigh_cache_init(void);
 void tnl_neigh_cache_run(void);
+bool tnl_neigh_get_refresh(char br_name[IFNAMSIZ], char dev_name[IFNAMSIZ],
+                           struct in6_addr *dst);
+void tnl_neigh_cache_wait(void);
 void tnl_neigh_flush(const char dev_name[IFNAMSIZ]);
 
 #endif

@@ -43,7 +43,6 @@
 #include "openvswitch/vlog.h"
 #include "ovs-router.h"
 #include "packets.h"
-#include "tnl-neigh-cache.h"
 #include "util.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_xlate_cache);
@@ -92,7 +91,6 @@ void
 xlate_push_stats_entry(struct xc_entry *entry,
                        struct dpif_flow_stats *stats, bool offloaded)
 {
-    struct eth_addr dmac;
 
     switch (entry->type) {
     case XC_TABLE:
@@ -148,11 +146,6 @@ xlate_push_stats_entry(struct xc_entry *entry,
     case XC_GROUP:
         group_dpif_credit_stats(entry->group.group, entry->group.bucket,
                                 stats);
-        break;
-    case XC_TNL_NEIGH:
-        /* Lookup neighbor to avoid timeout. */
-        tnl_neigh_lookup(entry->tnl_neigh_cache.br_name,
-                         &entry->tnl_neigh_cache.d_ipv6, &dmac, false);
         break;
     case XC_TUNNEL_HEADER:
         if (entry->tunnel_hdr.operation == ADD) {
@@ -240,8 +233,6 @@ xlate_cache_clear_entry(struct xc_entry *entry)
         break;
     case XC_GROUP:
         ofproto_group_unref(&entry->group.group->up);
-        break;
-    case XC_TNL_NEIGH:
         break;
     case XC_TUNNEL_HEADER:
         break;
@@ -348,7 +339,6 @@ xlate_xcache_format(struct ds *s, const struct xlate_cache *xcache)
         case XC_LEARN:
         case XC_NORMAL:
         case XC_FIN_TIMEOUT:
-        case XC_TNL_NEIGH:
         case XC_TUNNEL_HEADER:
             break;
         }
