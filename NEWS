@@ -1,6 +1,12 @@
 Post-v4.0.0
 --------------------
 
+   - Tunneling:
+     * Native tunnel output now supports weighted ECMP system routes and
+       generic nexthop groups, including resilient groups.  Linux nexthop
+       objects are cached from netlink.
+     * The new 'ovs/nexthop/add' and 'ovs/nexthop/group/add' appctl commands
+       add or replace manually configured entries by ID.
 
 v4.0.0 - 17 Aug 2026
 --------------------
